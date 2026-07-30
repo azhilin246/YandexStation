@@ -28,6 +28,9 @@ IOT_TYPES = {
     "humidity": "devices.capabilities.range",
     "ionization": "devices.capabilities.toggle",
     "backlight": "devices.capabilities.toggle",
+    # fan
+    "oscillation": "devices.capabilities.toggle",
+    "controls_locked": "devices.capabilities.toggle",
     # climate
     "swing": "devices.capabilities.mode",
     # kettle:
