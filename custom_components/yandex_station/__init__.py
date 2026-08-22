@@ -59,6 +59,7 @@ PLATFORMS = [
     "cover",
     "humidifier",
     "light",
+    "lock",
     "media_player",
     "number",
     "remote",

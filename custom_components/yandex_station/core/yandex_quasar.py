@@ -12,6 +12,7 @@ _LOGGER = logging.getLogger(__name__)
 
 IOT_TYPES = {
     "on": "devices.capabilities.on_off",
+    "lock": "devices.capabilities.lock",
     "temperature": "devices.capabilities.range",
     "fan_speed": "devices.capabilities.mode",
     "thermostat": "devices.capabilities.mode",
