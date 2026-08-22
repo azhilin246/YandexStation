@@ -57,6 +57,7 @@ PLATFORMS = [
     "camera",
     "climate",
     "cover",
+    "fan",
     "humidifier",
     "light",
     "lock",
