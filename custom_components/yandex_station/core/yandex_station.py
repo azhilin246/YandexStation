@@ -173,6 +173,10 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
     # true of false if device has HDMI
     hdmi_audio: Optional[bool] = None
 
+    # station supports the `audio_play` directive (reported in every local
+    # message), used to play media URLs instead of the legacy `radio_play`
+    audio_client: bool = False
+
     is_on: bool = None
     """Yandex TV screen state. None if device don't have this state."""
 
@@ -548,6 +552,9 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
             self.async_write_ha_state()
             return
 
+        if features := data.get("supported_features"):
+            self.audio_client = "audio_client" in features
+
         state = data["state"]
         state.pop("timeSinceLastVoiceActivity", None)
 
@@ -878,16 +885,19 @@ class YandexStationBase(MediaBrowser, RestoreEntity):
                 )
                 # we use the sourced_media.url to reduce the link size
                 payload = utils.get_stream_url(
-                    sourced_media.url, media_type, extra.get("metadata")
+                    sourced_media.url,
+                    media_type,
+                    extra.get("metadata"),
+                    self.audio_client,
                 )
 
             elif "https://" in media_id or "http://" in media_id:
                 payload = utils.get_stream_url(
-                    media_id, media_type, extra.get("metadata")
+                    media_id, media_type, extra.get("metadata"), self.audio_client
                 )
                 if not payload:
                     payload = await utils.get_media_payload(
-                        self.quasar.session, media_id
+                        self.quasar.session, media_id, self.audio_client
                     )
 
             elif media_type.startswith(("text:", "dialog:")):
