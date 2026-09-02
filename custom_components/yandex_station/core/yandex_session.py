@@ -289,6 +289,9 @@ class YandexSession(BasicSession):
     async def put(self, url, **kwargs):
         return await self.request("put", url, **kwargs)
 
+    async def delete(self, url, **kwargs):
+        return await self.request("delete", url, **kwargs)
+
     async def ws_connect(self, *args, **kwargs):
         if "ssl" not in kwargs:
             kwargs.setdefault("proxy", self.proxy)

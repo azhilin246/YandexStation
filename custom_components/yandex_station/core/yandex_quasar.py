@@ -2,6 +2,7 @@ import asyncio
 import json
 import logging
 from datetime import datetime
+from urllib.parse import quote
 
 from aiohttp import WSMsgType
 
@@ -200,6 +201,7 @@ class YandexQuasar(Dispatcher):
     # all devices
     devices: list[dict] = None
     scenarios: list[dict] = None
+    onetime_scenarios: list[dict] = None
     online_updated: asyncio.Event = None
     updates_task: asyncio.Task = None
 
@@ -275,6 +277,46 @@ class YandexQuasar(Dispatcher):
         assert resp["status"] == "ok", resp
 
         self.scenarios = resp["scenarios"]
+        self.onetime_scenarios = resp.get("onetime_scenarios", [])
+
+    async def load_onetime_scenarios(self) -> list[dict]:
+        """Получает список временных сценариев."""
+        await self.load_scenarios()
+        return self.onetime_scenarios
+
+    async def create_onetime_scenario(
+        self, command: str, speaker_name: str | None = None
+    ) -> bool:
+        """Передаёт Алисе команду, создающую временный сценарий."""
+        speakers = self.speakers
+        if speaker_name:
+            speaker = next(
+                (
+                    item
+                    for item in speakers
+                    if item["name"].casefold() == speaker_name.casefold()
+                ),
+                None,
+            )
+            if speaker is None:
+                raise ValueError(f"Не найдена станция: {speaker_name}")
+        elif speakers:
+            speaker = speakers[0]
+        else:
+            raise ValueError("Не найдена ни одна станция")
+
+        await self.send(speaker, command)
+        return True
+
+    async def cancel_onetime_scenario(self, launch_id: str) -> bool:
+        """Отменяет временный сценарий по идентификатору запуска."""
+        launch_id = quote(launch_id, safe="")
+        r = await self.session.delete(
+            f"https://iot.quasar.yandex.ru/m/user/launches/{launch_id}"
+        )
+        resp = await r.json()
+        assert resp["status"] == "ok", resp
+        return True
 
     async def update_scenario(self, name: str):
         # check if we known scenario name

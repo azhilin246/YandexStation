@@ -1,5 +1,6 @@
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, time, timedelta
+from math import ceil
 
 from dateutil.rrule import rrulestr
 from homeassistant.components.calendar import (
@@ -9,6 +10,7 @@ from homeassistant.components.calendar import (
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity import DeviceInfo
+from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
 from .core.const import DOMAIN
@@ -20,7 +22,10 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(hass, entry, async_add_entities):
     quasar: YandexQuasar = hass.data[DOMAIN][entry.unique_id]
     # can't use update_before_add because it works for disabled entities
-    async_add_entities([YandexCalendar(quasar, sp) for sp in quasar.speakers])
+    async_add_entities(
+        [YandexCalendar(quasar, sp) for sp in quasar.speakers]
+        + [YandexTemporaryScenariosCalendar(quasar, entry.unique_id)]
+    )
 
 
 class YandexCalendar(CalendarEntity):
@@ -83,6 +88,64 @@ class YandexCalendar(CalendarEntity):
             await self.async_update_ha_state(force_refresh=True)
 
 
+class YandexTemporaryScenariosCalendar(CalendarEntity):
+    _attr_supported_features = (
+        CalendarEntityFeature.CREATE_EVENT | CalendarEntityFeature.DELETE_EVENT
+    )
+
+    def __init__(self, quasar: YandexQuasar, account_id: str):
+        self.quasar = quasar
+        self._attr_device_info = DeviceInfo(
+            identifiers={(DOMAIN, f"{account_id}_scenarios")},
+            name="Сценарии",
+            manufacturer="Yandex",
+        )
+        self._attr_name = "Временные сценарии"
+        self._attr_unique_id = f"{account_id}_temporary_scenarios_calendar"
+        self.entity_id = f"calendar.yandex_station_{slugify(self._attr_unique_id)}"
+
+        self.events: list[CalendarEvent] = []
+        self.next_event: CalendarEvent | None = None
+
+    @property
+    def event(self) -> CalendarEvent | None:
+        return self.next_event
+
+    async def async_update(self):
+        try:
+            scenarios = await self.quasar.load_onetime_scenarios()
+            self.events = [onetime_scenario_to_event(item) for item in scenarios]
+            now = dt_util.now()
+            self.next_event = next(
+                (
+                    item
+                    for item in sorted(self.events, key=lambda event: event.start)
+                    if item.start >= now
+                ),
+                None,
+            )
+        except Exception:
+            _LOGGER.exception("Не удалось обновить временные сценарии")
+
+    async def async_get_events(
+        self, hass: HomeAssistant, start_date: datetime, end_date: datetime
+    ) -> list[CalendarEvent]:
+        return [
+            item
+            for item in self.events
+            if start_date <= item.start and item.end <= end_date
+        ]
+
+    async def async_create_event(self, **kwargs) -> None:
+        command = event_to_onetime_command(kwargs)
+        if await self.quasar.create_onetime_scenario(command, kwargs.get("location")):
+            await self.async_update_ha_state(force_refresh=True)
+
+    async def async_delete_event(self, uid: str, **kwargs) -> None:
+        if await self.quasar.cancel_onetime_scenario(uid):
+            await self.async_update_ha_state(force_refresh=True)
+
+
 DAYS_ALARM = [
     "Monday",
     "Tuesday",
@@ -94,6 +157,81 @@ DAYS_ALARM = [
 ]
 DAYS_EVENT = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 DURATION = timedelta(minutes=1)
+
+
+def _event_datetime(value: date | datetime) -> datetime:
+    if isinstance(value, datetime):
+        return value
+    return datetime.combine(value, time.min, dt_util.DEFAULT_TIME_ZONE)
+
+
+def _russian_interval(value: timedelta) -> str:
+    minutes = max(1, ceil(value.total_seconds() / 60))
+    if minutes % 60 == 0:
+        count = minutes // 60
+        forms = ("час", "часа", "часов")
+    else:
+        count = minutes
+        forms = ("минуту", "минуты", "минут")
+
+    remainder = count % 100
+    if 11 <= remainder <= 14:
+        form = forms[2]
+    elif count % 10 == 1:
+        form = forms[0]
+    elif 2 <= count % 10 <= 4:
+        form = forms[1]
+    else:
+        form = forms[2]
+    return f"{count} {form}"
+
+
+def event_to_onetime_command(event: dict, now: datetime | None = None) -> str:
+    """Преобразует событие календаря в естественную команду Алисе."""
+    command = event["summary"].strip()
+    if not command:
+        raise ValueError("Название события должно содержать команду Алисе")
+
+    start = _event_datetime(event["dtstart"])
+    end = _event_datetime(event["dtend"])
+    if start.tzinfo is None:
+        start = start.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+    if end.tzinfo is None:
+        end = end.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+    if end < start:
+        raise ValueError("Конец события не может быть раньше начала")
+
+    if now is None:
+        now = dt_util.now()
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+    delay = start - now.astimezone(start.tzinfo)
+    if delay > timedelta(seconds=30):
+        command += f" через {_russian_interval(delay)}"
+
+    duration = end - start
+    if duration > DURATION:
+        command += f" на {_russian_interval(duration)}"
+    return command
+
+
+def onetime_scenario_to_event(scenario: dict) -> CalendarEvent:
+    value = scenario["scheduled_time"]
+    if isinstance(value, (int, float)):
+        dt = datetime.fromtimestamp(value, dt_util.UTC)
+    else:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+    return CalendarEvent(
+        dt,
+        dt + DURATION,
+        scenario.get("name") or "Временный сценарий",
+        "",
+        uid=scenario["id"],
+    )
 
 
 def alarm_to_event(alarm: dict) -> CalendarEvent:
