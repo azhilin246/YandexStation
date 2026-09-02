@@ -9,6 +9,7 @@ from homeassistant.components.calendar import (
     CalendarEvent,
 )
 from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity import DeviceInfo
 from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
@@ -114,7 +115,9 @@ class YandexTemporaryScenariosCalendar(CalendarEntity):
     async def async_update(self):
         try:
             scenarios = await self.quasar.load_onetime_scenarios()
-            self.events = [onetime_scenario_to_event(item) for item in scenarios]
+            self.events = [
+                onetime_scenario_to_event(item, self.hass) for item in scenarios
+            ]
             now = dt_util.now()
             self.next_event = next(
                 (
@@ -216,7 +219,30 @@ def event_to_onetime_command(event: dict, now: datetime | None = None) -> str:
     return command
 
 
-def onetime_scenario_to_event(scenario: dict) -> CalendarEvent:
+def resolve_target_entity_id(
+    target: dict, hass: HomeAssistant | None = None
+) -> str | None:
+    """Связывает цель Яндекса с сущностью Home Assistant."""
+    if entity_id := target.get("entity_id"):
+        return entity_id
+    if hass is None or not (target_id := target.get("id")):
+        return None
+
+    unique_id = target_id.replace("-", "")
+    registry = er.async_get(hass)
+    return next(
+        (
+            entry.entity_id
+            for entry in registry.entities.values()
+            if entry.platform == DOMAIN and entry.unique_id == unique_id
+        ),
+        None,
+    )
+
+
+def onetime_scenario_to_event(
+    scenario: dict, hass: HomeAssistant | None = None
+) -> CalendarEvent:
     value = scenario["scheduled_time"]
     if isinstance(value, (int, float)):
         dt = datetime.fromtimestamp(value, dt_util.UTC)
@@ -225,13 +251,82 @@ def onetime_scenario_to_event(scenario: dict) -> CalendarEvent:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
 
+    targets = scenario.get("targets", [])
+    action = onetime_action_summary(targets)
+    name = scenario.get("name") or "Временный сценарий"
+    summary = f"{action} {name}" if action else name
+    entity_ids = [
+        entity_id
+        for target in targets
+        if (entity_id := resolve_target_entity_id(target, hass))
+    ]
+    rooms = sorted(
+        {target["room_name"] for target in targets if target.get("room_name")}
+    )
+
     return CalendarEvent(
         dt,
         dt + DURATION,
-        scenario.get("name") or "Временный сценарий",
-        "",
+        summary,
+        "\n".join(entity_ids),
+        location=", ".join(rooms) or None,
         uid=scenario["id"],
     )
+
+
+def onetime_action_summary(targets: list[dict]) -> str | None:
+    """Возвращает краткое описание действия временного сценария."""
+    actions = []
+    for target in targets:
+        target_type = target.get("type") or ""
+        for capability in target.get("capabilities", []):
+            state = capability.get("state") or {}
+            instance = state.get("instance")
+            value = state.get("value")
+            capability_type = capability.get("type")
+
+            if (
+                capability_type == "devices.capabilities.on_off"
+                and target_type.startswith("devices.types.openable")
+                and value is True
+            ):
+                action = "Открыть"
+            elif (
+                capability_type == "devices.capabilities.on_off"
+                and target_type.startswith("devices.types.openable")
+                and value is False
+            ):
+                action = "Закрыть"
+            elif capability_type == "devices.capabilities.on_off" and value is True:
+                action = "Включить"
+            elif capability_type == "devices.capabilities.on_off" and value is False:
+                action = "Выключить"
+            elif capability_type == "devices.capabilities.lock" and value is True:
+                action = "Закрыть замок"
+            elif capability_type == "devices.capabilities.lock" and value is False:
+                action = "Открыть замок"
+            elif capability_type == "devices.capabilities.range" and instance == "open":
+                if value == 0:
+                    action = "Закрыть"
+                elif value == 100:
+                    action = "Открыть"
+                elif isinstance(value, (int, float)):
+                    action = f"Открыть на {value}%"
+                else:
+                    action = None
+            elif (
+                capability_type == "devices.capabilities.range"
+                and instance == "brightness"
+                and isinstance(value, (int, float))
+            ):
+                action = f"Яркость {value}%"
+            else:
+                action = None
+
+            if action and action not in actions:
+                actions.append(action)
+
+    return ", ".join(actions) or None
 
 
 def alarm_to_event(alarm: dict) -> CalendarEvent:

@@ -4,9 +4,13 @@ from unittest.mock import AsyncMock
 
 from custom_components.yandex_station.calendar import (
     event_to_onetime_command,
+    onetime_action_summary,
     onetime_scenario_to_event,
 )
-from custom_components.yandex_station.core.yandex_quasar import YandexQuasar
+from custom_components.yandex_station.core.yandex_quasar import (
+    YandexQuasar,
+    parse_onetime_targets,
+)
 
 
 def test_event_to_delayed_command():
@@ -37,30 +41,131 @@ def test_onetime_scenario_to_event():
             "id": "launch-id",
             "name": "Люстра",
             "scheduled_time": "2026-09-02T04:15:22+03:00",
+            "targets": [
+                {
+                    "entity_id": "light.office_ceiling_light",
+                    "room_name": "Кабинет",
+                    "capabilities": [
+                        {
+                            "type": "devices.capabilities.on_off",
+                            "state": {"instance": "on", "value": False},
+                        }
+                    ],
+                }
+            ],
         }
     )
 
     assert event.uid == "launch-id"
-    assert event.summary == "Люстра"
+    assert event.summary == "Выключить Люстра"
+    assert event.description == "light.office_ceiling_light"
+    assert event.location == "Кабинет"
     assert event.start.isoformat() == "2026-09-02T04:15:22+03:00"
     assert event.end - event.start == timedelta(minutes=1)
 
 
+def test_onetime_action_summary_for_cover():
+    assert (
+        onetime_action_summary(
+            [
+                {
+                    "type": "devices.types.openable.curtain",
+                    "capabilities": [
+                        {
+                            "type": "devices.capabilities.on_off",
+                            "state": {"instance": "on", "value": False},
+                        }
+                    ],
+                }
+            ]
+        )
+        == "Закрыть"
+    )
+
+
+def test_parse_onetime_targets():
+    launch = {
+        "steps": [
+            {
+                "type": "scenarios.steps.actions.v2",
+                "parameters": {
+                    "items": [
+                        {
+                            "id": "target-id",
+                            "value": {
+                                "id": "target-id",
+                                "name": "Люстра",
+                                "type": "devices.types.light.ceiling",
+                                "item_type": "device",
+                                "capabilities": [
+                                    {
+                                        "type": "devices.capabilities.on_off",
+                                        "state": {"instance": "on", "value": False},
+                                    }
+                                ],
+                            },
+                        }
+                    ]
+                },
+            }
+        ]
+    }
+    devices = [
+        {
+            "id": "target-id",
+            "external_id": "light.office_ceiling_light",
+            "name": "Люстра",
+            "type": "devices.types.light.ceiling",
+            "item_type": "device",
+            "room_name": "Кабинет",
+            "house_name": "Дом",
+        }
+    ]
+
+    assert parse_onetime_targets(launch, devices) == [
+        {
+            "id": "target-id",
+            "entity_id": "light.office_ceiling_light",
+            "external_id": "light.office_ceiling_light",
+            "name": "Люстра",
+            "type": "devices.types.light.ceiling",
+            "item_type": "device",
+            "room_name": "Кабинет",
+            "house_name": "Дом",
+            "capabilities": [
+                {
+                    "type": "devices.capabilities.on_off",
+                    "state": {"instance": "on", "value": False},
+                }
+            ],
+        }
+    ]
+
+
 def test_load_onetime_scenarios():
-    response = AsyncMock()
-    response.json.return_value = {
+    list_response = AsyncMock()
+    list_response.json.return_value = {
         "status": "ok",
         "scenarios": [{"id": "regular"}],
         "onetime_scenarios": [{"id": "launch-id"}],
     }
+    detail_response = AsyncMock()
+    detail_response.json.return_value = {
+        "status": "ok",
+        "launch": {"id": "launch-id", "steps": []},
+    }
     session = AsyncMock()
-    session.get.return_value = response
+    session.get.side_effect = [list_response, detail_response]
     quasar = YandexQuasar(session)
+    quasar.devices = []
 
     result = asyncio.run(quasar.load_onetime_scenarios())
 
-    assert result == [{"id": "launch-id"}]
+    assert result == [{"id": "launch-id", "targets": []}]
     assert quasar.scenarios == [{"id": "regular"}]
+    assert session.get.await_args_list[1].args == (
+        "https://iot.quasar.yandex.ru/m/v3/user/launches/launch-id/edit",
+    )
 
 
 def test_cancel_onetime_scenario():

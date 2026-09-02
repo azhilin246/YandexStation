@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 from urllib.parse import quote
 
@@ -57,6 +58,7 @@ IOT_TYPES = {
 
 MASK_EN = "0123456789abcdef-"
 MASK_RU = "оеаинтсрвлкмдпуяы"
+ENTITY_ID_PATTERN = re.compile(r"^[a-z_][a-z0-9_]*\.[a-z0-9_]+$")
 
 
 def encode(uid: str) -> str:
@@ -98,6 +100,40 @@ def parse_device(data: dict) -> dict:
         ],
         "directives": data["directives"],
     }
+
+
+def parse_onetime_targets(launch: dict, devices: list[dict]) -> list[dict]:
+    """Связывает цели временного сценария с устройствами пользователя."""
+    devices_by_id = {device["id"]: device for device in devices}
+    targets = []
+
+    for step in launch.get("steps", []):
+        for item in step.get("parameters", {}).get("items", []):
+            value = item.get("value") or {}
+            device_id = value.get("id") or item.get("id")
+            device = devices_by_id.get(device_id, {})
+            external_id = device.get("external_id")
+
+            targets.append(
+                {
+                    "id": device_id,
+                    "entity_id": (
+                        external_id
+                        if isinstance(external_id, str)
+                        and ENTITY_ID_PATTERN.fullmatch(external_id)
+                        else None
+                    ),
+                    "external_id": external_id,
+                    "name": device.get("name") or value.get("name"),
+                    "type": device.get("type") or value.get("type"),
+                    "item_type": device.get("item_type") or value.get("item_type"),
+                    "room_name": device.get("room_name"),
+                    "house_name": device.get("house_name"),
+                    "capabilities": value.get("capabilities", []),
+                }
+            )
+
+    return targets
 
 
 def scenario_speaker_tts(name: str, trigger: str, device_id: str, text: str) -> dict:
@@ -282,7 +318,32 @@ class YandexQuasar(Dispatcher):
     async def load_onetime_scenarios(self) -> list[dict]:
         """Получает список временных сценариев."""
         await self.load_scenarios()
-        return self.onetime_scenarios
+        result = []
+        for scenario in self.onetime_scenarios:
+            try:
+                launch = await self.get_onetime_scenario(scenario["id"])
+                result.append(
+                    {
+                        **scenario,
+                        "targets": parse_onetime_targets(launch, self.devices),
+                    }
+                )
+            except Exception:
+                _LOGGER.exception(
+                    "Не удалось получить временный сценарий %s", scenario["id"]
+                )
+                result.append({**scenario, "targets": []})
+        return result
+
+    async def get_onetime_scenario(self, launch_id: str) -> dict:
+        """Получает действия и цели временного сценария."""
+        launch_id = quote(launch_id, safe="")
+        r = await self.session.get(
+            f"https://iot.quasar.yandex.ru/m/v3/user/launches/{launch_id}/edit"
+        )
+        resp = await r.json()
+        assert resp["status"] == "ok", resp
+        return resp["launch"]
 
     async def create_onetime_scenario(
         self, command: str, speaker_name: str | None = None
