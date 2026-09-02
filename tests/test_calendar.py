@@ -40,7 +40,9 @@ def test_onetime_scenario_to_event():
         {
             "id": "launch-id",
             "name": "Люстра",
+            "created_time": "2026-09-01T08:15:22+03:00",
             "scheduled_time": "2026-09-02T04:15:22+03:00",
+            "initial_timer_value": 72000,
             "targets": [
                 {
                     "entity_id": "light.office_ceiling_light",
@@ -60,7 +62,35 @@ def test_onetime_scenario_to_event():
     assert event.summary == "Выключить Люстра"
     assert event.description == "light.office_ceiling_light"
     assert event.location == "Кабинет"
-    assert event.start.isoformat() == "2026-09-02T04:15:22+03:00"
+    assert event.start.isoformat() == "2026-09-01T08:15:22+03:00"
+    assert event.end.isoformat() == "2026-09-02T04:15:22+03:00"
+    assert event.end - event.start == timedelta(hours=20)
+
+
+def test_onetime_scenario_uses_initial_timer_without_created_time():
+    event = onetime_scenario_to_event(
+        {
+            "id": "launch-id",
+            "name": "Люстра",
+            "scheduled_time": "2026-09-03T00:16:19Z",
+            "initial_timer_value": 72000,
+        }
+    )
+
+    assert event.start.isoformat() == "2026-09-02T04:16:19+00:00"
+    assert event.end.isoformat() == "2026-09-03T00:16:19+00:00"
+
+
+def test_onetime_scenario_uses_minute_fallback_without_timer_metadata():
+    event = onetime_scenario_to_event(
+        {
+            "id": "launch-id",
+            "name": "Люстра",
+            "scheduled_time": "2026-09-03T00:16:19Z",
+        }
+    )
+
+    assert event.start.isoformat() == "2026-09-03T00:16:19+00:00"
     assert event.end - event.start == timedelta(minutes=1)
 
 

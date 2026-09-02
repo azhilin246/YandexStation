@@ -243,13 +243,29 @@ def resolve_target_entity_id(
 def onetime_scenario_to_event(
     scenario: dict, hass: HomeAssistant | None = None
 ) -> CalendarEvent:
-    value = scenario["scheduled_time"]
-    if isinstance(value, (int, float)):
-        dt = datetime.fromtimestamp(value, dt_util.UTC)
+    dt = _onetime_scenario_datetime(scenario["scheduled_time"])
+    start = None
+
+    if value := scenario.get("created_time"):
+        try:
+            start = _onetime_scenario_datetime(value)
+        except (TypeError, ValueError):
+            pass
+
+    if start is None or start >= dt:
+        timer = scenario.get("initial_timer_value")
+        if (
+            isinstance(timer, (int, float))
+            and not isinstance(timer, bool)
+            and timer > 0
+        ):
+            start = dt - timedelta(seconds=timer)
+
+    if start is None or start >= dt:
+        start = dt
+        end = dt + DURATION
     else:
-        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+        end = dt
 
     targets = scenario.get("targets", [])
     action = onetime_action_summary(targets)
@@ -265,13 +281,20 @@ def onetime_scenario_to_event(
     )
 
     return CalendarEvent(
-        dt,
-        dt + DURATION,
+        start,
+        end,
         summary,
         "\n".join(entity_ids),
         location=", ".join(rooms) or None,
         uid=scenario["id"],
     )
+
+
+def _onetime_scenario_datetime(value: str | int | float) -> datetime:
+    if isinstance(value, (int, float)):
+        return datetime.fromtimestamp(value, dt_util.UTC)
+    dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    return dt if dt.tzinfo else dt.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
 
 
 def onetime_action_summary(targets: list[dict]) -> str | None:
