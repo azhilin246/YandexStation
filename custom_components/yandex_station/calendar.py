@@ -119,14 +119,7 @@ class YandexTemporaryScenariosCalendar(CalendarEntity):
                 onetime_scenario_to_event(item, self.hass) for item in scenarios
             ]
             now = dt_util.now()
-            self.next_event = next(
-                (
-                    item
-                    for item in sorted(self.events, key=lambda event: event.start)
-                    if item.start >= now
-                ),
-                None,
-            )
+            self.next_event = _current_or_next_event(self.events, now)
         except Exception:
             _LOGGER.exception("Не удалось обновить временные сценарии")
 
@@ -295,6 +288,19 @@ def _onetime_scenario_datetime(value: str | int | float) -> datetime:
         return datetime.fromtimestamp(value, dt_util.UTC)
     dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
     return dt if dt.tzinfo else dt.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
+
+
+def _current_or_next_event(
+    events: list[CalendarEvent], now: datetime
+) -> CalendarEvent | None:
+    return next(
+        (
+            event
+            for event in sorted(events, key=lambda item: item.start)
+            if event.end >= now
+        ),
+        None,
+    )
 
 
 def onetime_action_summary(targets: list[dict]) -> str | None:

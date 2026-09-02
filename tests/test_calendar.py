@@ -3,6 +3,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import AsyncMock
 
 from custom_components.yandex_station.calendar import (
+    _current_or_next_event,
     event_to_onetime_command,
     onetime_action_summary,
     onetime_scenario_to_event,
@@ -92,6 +93,20 @@ def test_onetime_scenario_uses_minute_fallback_without_timer_metadata():
 
     assert event.start.isoformat() == "2026-09-03T00:16:19+00:00"
     assert event.end - event.start == timedelta(minutes=1)
+
+
+def test_current_scenario_is_exposed_as_calendar_event():
+    now = datetime(2026, 9, 2, 12, 0, tzinfo=timezone.utc)
+    current = onetime_scenario_to_event(
+        {
+            "id": "current",
+            "name": "Люстра",
+            "created_time": "2026-09-02T04:16:19Z",
+            "scheduled_time": "2026-09-03T00:16:19Z",
+        }
+    )
+
+    assert _current_or_next_event([current], now) is current
 
 
 def test_onetime_action_summary_for_cover():
